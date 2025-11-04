@@ -1,0 +1,225 @@
+
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Simple Bubble Shooter</title>
+<style>
+  html,body{height:100%;margin:0;background:#0b1220;display:flex;align-items:center;justify-content:center;color:white;}
+  canvas{background:#061226;border:4px solid #123;display:block}
+  #info{position:fixed;top:10px;left:10px;font-family:sans-serif}
+  button{margin-left:8px}
+</style>
+</head>
+<body>
+<div id="info">Drag to aim, release to shoot. <button id="reset">Reset</button></div>
+<canvas id="c" width="360" height="640"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const R = 16; // bubble radius
+const rows = 10, cols = 9;
+const grid = [];
+const colors = ['#ff4b4b','#4bff7a','#4bb8ff','#ffd54b'];
+const shooter = {x: W/2, y: H-40};
+let current = null;
+let shooting = false;
+let vx=0, vy=0;
+let mouse = {x:0,y:0,down:false};
+const gravity=0; // no gravity
+
+function reset(){
+  // init grid with some rows filled
+  for(let r=0;r<rows;r++){
+    grid[r]=[];
+    for(let c=0;c<cols;c++){
+      if(r<5 && Math.random()>0.3){
+        grid[r][c] = {color: colors[Math.floor(Math.random()*colors.length)]};
+      } else grid[r][c] = null;
+    }
+  }
+  spawnCurrent();
+}
+function spawnCurrent(){
+  current = {x: shooter.x, y: shooter.y, color: colors[Math.floor(Math.random()*colors.length)], stuck:false};
+  vx=0; vy=0; shooting=false;
+}
+
+function drawBubble(x,y,color){ ctx.beginPath(); ctx.arc(x,y,R,0,Math.PI*2); ctx.fillStyle=color; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,0.2)'; ctx.stroke(); }
+
+function gridToXY(r,c){ // staggered rows
+  const startX = R+2;
+  const x = startX + c*(R*2+2) + (r%2? R+1 : 0);
+  const y = R+2 + r*(Math.sqrt(3)*R-4);
+  return {x,y};
+}
+
+function snapToGrid(x,y){
+  let best = {r:0,c:0,dist:1e9};
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const p = gridToXY(r,c);
+      const d = Math.hypot(x-p.x,y-p.y);
+      if(d<best.dist){ best={r,c,dist:d}; }
+    }
+  }
+  return {r:best.r,c:best.c};
+}
+
+function collisionWithGrid(x,y){
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(grid[r][c]){
+        const p=gridToXY(r,c);
+        if(Math.hypot(x-p.x,y-p.y) < R*2-2) return true;
+      }
+    }
+  }
+  // top collision
+  if(y < R+4) return true;
+  return false;
+}
+
+function attachToGrid(x,y){
+  const {r,c} = snapToGrid(x,y);
+  // if occupied, try nearby cells
+  if(grid[r][c]){
+    // find nearest empty neighbor
+    const nbs = [[0,1],[0,-1],[1,0],[-1,0],[1,1],[-1,-1]];
+    for(const nb of nbs){
+      const rr=r+nb[0], cc=c+nb[1];
+      if(rr>=0 && rr<rows && cc>=0 && cc<cols && !grid[rr][cc]){ grid[rr][cc]={color:current.color}; return {r:rr,c:cc}; }
+    }
+    // fallback: find any empty
+    for(let rr=rows-1;rr>=0;rr--) for(let cc=0;cc<cols;cc++) if(!grid[rr][cc]){ grid[rr][cc]={color:current.color}; return {r:rr,c:cc}; }
+    return null;
+  } else {
+    grid[r][c] = {color: current.color};
+    return {r,c};
+  }
+}
+
+function findMatches(startR,startC){
+  const target = grid[startR][startC].color;
+  const visited = new Set();
+  const q = [[startR,startC]];
+  visited.add(startR+'_'+startC);
+  while(q.length){
+    const [r,c]=q.shift();
+    const neighbors = getNeighbors(r,c);
+    for(const [nr,nc] of neighbors){
+      if(nr<0||nr>=rows||nc<0||nc>=cols) continue;
+      if(grid[nr][nc] && grid[nr][nc].color===target && !visited.has(nr+'_'+nc)){
+        visited.add(nr+'_'+nc); q.push([nr,nc]);
+      }
+    }
+  }
+  const out=[]; for(const key of visited){ const parts=key.split('_'); out.push([parseInt(parts[0]),parseInt(parts[1])]); }
+  return out;
+}
+
+function getNeighbors(r,c){
+  // hex-like neighbors approximated
+  if(r%2===0){
+    return [[r,c-1],[r,c+1],[r-1,c],[r-1,c-1],[r+1,c],[r+1,c-1]];
+  } else {
+    return [[r,c-1],[r,c+1],[r-1,c],[r-1,c+1],[r+1,c],[r+1,c+1]];
+  }
+}
+
+function removeDisconnected(){
+  // simple: any bubble not connected to top row gets removed
+  const visited = new Set();
+  const q=[];
+  for(let c=0;c<cols;c++){ if(grid[0][c]){ visited.add('0_'+c); q.push([0,c]); } }
+  while(q.length){
+    const [r,c]=q.shift();
+    for(const [nr,nc] of getNeighbors(r,c)){
+      if(nr<0||nr>=rows||nc<0||nc>=cols) continue;
+      if(grid[nr][nc] && !visited.has(nr+'_'+nc)){
+        visited.add(nr+'_'+nc); q.push([nr,nc]);
+      }
+    }
+  }
+  // remove unvisited
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) if(grid[r][c] && !visited.has(r+'_'+c)) grid[r][c]=null;
+}
+
+function update(dt){
+  if(shooting && current){
+    current.x += vx*dt; current.y += vy*dt;
+    // wall bounce
+    if(current.x < R+2){ current.x = R+2; vx = -vx; }
+    if(current.x > W-R-2){ current.x = W-R-2; vx = -vx; }
+    if(collisionWithGrid(current.x,current.y)){
+      // attach
+      const pos = attachToGrid(current.x,current.y);
+      if(pos){
+        // check matches
+        const matches = findMatches(pos.r,pos.c);
+        if(matches.length >= 3){
+          for(const [rr,cc] of matches) grid[rr][cc]=null;
+          removeDisconnected();
+        }
+      }
+      spawnCurrent();
+    }
+  }
+}
+
+let last = performance.now();
+function loop(t){
+  const dt = (t-last)/16.666; last=t;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // draw grid
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const p = gridToXY(r,c);
+      if(grid[r][c]) drawBubble(p.x,p.y,grid[r][c].color);
+      else { ctx.beginPath(); ctx.arc(p.x,p.y,R,0,Math.PI*2); ctx.strokeStyle='rgba(255,255,255,0.03)'; ctx.stroke(); }
+    }
+  }
+  // draw shooter
+  ctx.save();
+  ctx.translate(shooter.x, shooter.y);
+  // aim line
+  if(!shooting){
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    const dx = mouse.x - shooter.x, dy = mouse.y - shooter.y;
+    const len = Math.hypot(dx,dy)||1;
+    ctx.lineTo((dx/len)*80,(dy/len)*80);
+    ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.stroke();
+  }
+  ctx.restore();
+  // draw current
+  if(current) drawBubble(current.x,current.y,current.color);
+}
+
+canvas.addEventListener('mousemove', e=>{ const r=canvas.getBoundingClientRect(); mouse.x = e.clientX-r.left; mouse.y = e.clientY-r.top; });
+canvas.addEventListener('mousedown', e=>{ mouse.down=true; });
+canvas.addEventListener('mouseup', e=>{
+  mouse.down=false;
+  if(current && !shooting){
+    // set velocity toward mouse point
+    const dx = mouse.x - shooter.x, dy = mouse.y - shooter.y;
+    const len = Math.hypot(dx,dy)||1;
+    const speed = 8;
+    vx = (dx/len)*speed; vy = (dy/len)*speed;
+    shooting = true;
+  }
+});
+
+document.getElementById('reset').addEventListener('click', reset);
+
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

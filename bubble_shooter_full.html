@@ -1,0 +1,327 @@
+
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Bubble Shooter - Fullscreen Demo</title>
+<style>
+  :root{--bg:#071025;--panel:#0b1630;--muted:rgba(255,255,255,0.12)}
+  html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Noto Sans',sans-serif;background:var(--bg);color:#fff}
+  #container{width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+  canvas{display:block;touch-action:none}
+  #ui{position:absolute;left:12px;top:12px;z-index:40;display:flex;gap:8px;align-items:center}
+  .pill{background:var(--panel);padding:8px 12px;border-radius:18px;backdrop-filter: blur(6px);box-shadow:0 6px 18px rgba(0,0,0,0.6);font-size:14px}
+  #score{min-width:68px;text-align:center}
+  #controls{position:absolute;right:12px;top:12px;display:flex;gap:8px;align-items:center}
+  button{background:rgba(255,255,255,0.06);border:1px solid var(--muted);color:#fff;padding:8px 10px;border-radius:10px;font-size:14px}
+  #startScreen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;z-index:50;background:linear-gradient(180deg,rgba(7,16,37,0.9),rgba(7,16,37,0.85))}
+  #title{font-size:28px;margin-bottom:8px;font-weight:700}
+  #subtitle{font-size:14px;color:rgba(255,255,255,0.8);margin-bottom:18px}
+  #playBtn{font-size:18px;padding:14px 28px;border-radius:12px}
+  #hint{position:absolute;bottom:18px;left:12px;font-size:13px;color:rgba(255,255,255,0.7)}
+  #nextPreview{width:36px;height:36px;border-radius:50%;display:inline-block;vertical-align:middle}
+  #mute{opacity:0.9}
+  #fullscreenBtn{opacity:0.95}
+</style>
+</head>
+<body>
+<div id="container">
+  <canvas id="c"></canvas>
+
+  <div id="ui">
+    <div class="pill" id="score">Score: 0</div>
+    <div class="pill">Lives: <span id="lives">3</span></div>
+    <div class="pill">Next: <span id="nextPreview"></span></div>
+  </div>
+
+  <div id="controls">
+    <button id="mute">Sound</button>
+    <button id="fullscreenBtn">Fullscreen</button>
+    <button id="reset" title="Reset level">Reset</button>
+  </div>
+
+  <div id="startScreen">
+    <div id="title">Bubble Shooter</div>
+    <div id="subtitle">Drag / touch to aim — release to shoot</div>
+    <button id="playBtn">Play</button>
+  </div>
+
+  <div id="hint">Tip: Use wide screen for best experience</div>
+</div>
+
+<script>
+// Responsive canvas & full-screen friendly
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+function resize(){ 
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Game vars
+const R = Math.max(12, Math.min(22, Math.floor(Math.min(window.innerWidth, window.innerHeight)/30))); // bubble radius responsive
+const rows = 10, cols = 9;
+let grid = [];
+const colors = ['#ff4b4b','#4bff7a','#4bb8ff','#ffd54b','#d98bff'];
+const shooter = {x: window.innerWidth/2, y: window.innerHeight - (R*2 + 18)};
+let current = null, nextBubble = null, shooting=false, vx=0, vy=0;
+let score = 0, lives = 3;
+document.getElementById('score').innerText = 'Score: 0'; document.getElementById('lives').innerText = lives;
+
+function initGrid(){
+  grid = [];
+  for(let r=0;r<rows;r++){
+    grid[r]=[];
+    for(let c=0;c<cols;c++){
+      if(r<5 && Math.random()>0.35) grid[r][c] = {color: colors[Math.floor(Math.random()*colors.length)]};
+      else grid[r][c] = null;
+    }
+  }
+}
+
+function spawnCurrent(){
+  if(!nextBubble) nextBubble = {color: colors[Math.floor(Math.random()*colors.length)]};
+  current = {x: shooter.x, y: shooter.y, color: nextBubble.color, stuck:false};
+  nextBubble = {color: colors[Math.floor(Math.random()*colors.length)]};
+  document.getElementById('nextPreview').style.background = nextBubble.color;
+  shooting=false; vx=0; vy=0;
+}
+
+// grid helpers (staggered hex-like)
+function gridToXY(r,c){
+  const startX = R+6;
+  const x = startX + c*(R*2+4) + (r%2? R+2 : 0);
+  const y = R+6 + r*(Math.sqrt(3)*R - 6);
+  return {x,y};
+}
+function collisionWithGrid(x,y){
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) if(grid[r][c]){
+    const p = gridToXY(r,c);
+    if(Math.hypot(x-p.x,y-p.y) < R*2 - 2) return true;
+  }
+  if(y < R+6) return true;
+  return false;
+}
+function snapToGrid(x,y){
+  let best={r:0,c:0,dist:1e9};
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const p = gridToXY(r,c);
+    const d = Math.hypot(x-p.x,y-p.y);
+    if(d<best.dist){ best={r,c,dist:d}; }
+  }
+  return {r:best.r,c:best.c};
+}
+function attachToGrid(x,y){
+  const pos = snapToGrid(x,y);
+  if(grid[pos.r][pos.c]){
+    const nbs = [[0,1],[0,-1],[1,0],[-1,0],[1,1],[-1,-1]];
+    for(const nb of nbs){
+      const rr=pos.r+nb[0], cc=pos.c+nb[1];
+      if(rr>=0 && rr<rows && cc>=0 && cc<cols && !grid[rr][cc]){ grid[rr][cc]={color:current.color}; return {r:rr,c:cc}; }
+    }
+    for(let rr=rows-1;rr>=0;rr--) for(let cc=0;cc<cols;cc++) if(!grid[rr][cc]){ grid[rr][cc]={color:current.color}; return {r:rr,c:cc}; }
+    return null;
+  } else {
+    grid[pos.r][pos.c] = {color: current.color};
+    return {r:pos.r,c:pos.c};
+  }
+}
+function getNeighbors(r,c){
+  if(r%2===0) return [[r,c-1],[r,c+1],[r-1,c],[r-1,c-1],[r+1,c],[r+1,c-1]];
+  return [[r,c-1],[r,c+1],[r-1,c],[r-1,c+1],[r+1,c],[r+1,c+1]];
+}
+function findMatches(sr,sc){
+  const target = grid[sr][sc].color;
+  const visited = new Set(); const q = [[sr,sc]]; visited.add(sr+'_'+sc);
+  while(q.length){
+    const [r,c]=q.shift();
+    for(const [nr,nc] of getNeighbors(r,c)){
+      if(nr<0||nr>=rows||nc<0||nc>=cols) continue;
+      if(grid[nr][nc] && grid[nr][nc].color===target && !visited.has(nr+'_'+nc)){ visited.add(nr+'_'+nc); q.push([nr,nc]); }
+    }
+  }
+  const out=[]; for(const k of visited){ const p=k.split('_'); out.push([parseInt(p[0]),parseInt(p[1])]); }
+  return out;
+}
+function removeDisconnected(){
+  const visited = new Set(); const q=[];
+  for(let c=0;c<cols;c++) if(grid[0][c]){ visited.add('0_'+c); q.push([0,c]); }
+  while(q.length){ const [r,c]=q.shift(); for(const [nr,nc] of getNeighbors(r,c)){ if(nr<0||nr>=rows||nc<0||nc>=cols) continue; if(grid[nr][nc] && !visited.has(nr+'_'+nc)){ visited.add(nr+'_'+nc); q.push([nr,nc]); } } }
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) if(grid[r][c] && !visited.has(r+'_'+c)) grid[r][c]=null;
+}
+
+// Sound using WebAudio (synthesized short sounds) - no external files
+let audioCtx=null, masterGain=null, musicNode=null, musicPlaying=false, soundOn=true;
+function ensureAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain(); masterGain.gain.value = 0.9; masterGain.connect(audioCtx.destination);
+}
+function playShoot(){
+  if(!soundOn) return;
+  ensureAudio();
+  const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+  o.type = 'sawtooth'; o.frequency.value = 700;
+  g.gain.value = 0.0001;
+  o.connect(g); g.connect(masterGain);
+  const t = audioCtx.currentTime;
+  g.gain.linearRampToValueAtTime(0.12, t+0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, t+0.25);
+  o.frequency.exponentialRampToValueAtTime(300, t+0.25);
+  o.start(t); o.stop(t+0.26);
+}
+function playPop(){
+  if(!soundOn) return;
+  ensureAudio();
+  const b = audioCtx.createBufferSource(), buf = audioCtx.createBuffer(1, audioCtx.sampleRate*0.08, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for(let i=0;i<data.length;i++){ data[i] = (Math.random()*2-1) * Math.exp(-i/(audioCtx.sampleRate*0.02)); }
+  b.buffer = buf; b.connect(masterGain); b.start();
+}
+function startMusic(){
+  if(!soundOn) return;
+  ensureAudio();
+  if(musicPlaying) return;
+  // simple looping arpeggio using oscillator and gain envelope
+  musicPlaying = true;
+  const baseFreq = 220;
+  const now = audioCtx.currentTime;
+  musicNode = audioCtx.createOscillator();
+  const g = audioCtx.createGain(); g.gain.value = 0.02;
+  musicNode.type='sine'; musicNode.frequency.value = baseFreq;
+  musicNode.connect(g); g.connect(masterGain);
+  musicNode.start();
+}
+function stopMusic(){
+  if(!musicPlaying) return;
+  if(musicNode) { try{ musicNode.stop(); }catch(e){} musicNode=null; }
+  musicPlaying=false;
+}
+
+// Input handling (mouse + touch)
+let pointer = {x:0,y:0,down:false};
+function pageToCanvas(e){ const rect = canvas.getBoundingClientRect(); let x=e.clientX||e.touches&&e.touches[0].clientX; let y=e.clientY||e.touches&&e.touches[0].clientY; return {x: x-rect.left, y: y-rect.top}; }
+
+canvas.addEventListener('pointermove', e=>{ const p = pageToCanvas(e); pointer.x = p.x; pointer.y = p.y; });
+canvas.addEventListener('pointerdown', e=>{ pointer.down=true; });
+canvas.addEventListener('pointerup', e=>{
+  pointer.down=false;
+  if(current && !shooting){
+    const dx = pointer.x - shooter.x, dy = pointer.y - shooter.y; const len = Math.hypot(dx,dy)||1; const speed = Math.max(6, Math.min(12, Math.hypot(dx,dy)/10));
+    vx = (dx/len)*speed; vy = (dy/len)*speed; shooting=true; playShoot();
+  }
+});
+
+// Fullscreen helpers
+const fsBtn = document.getElementById('fullscreenBtn');
+fsBtn.addEventListener('click', ()=>{ if(document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); });
+
+// UI buttons
+document.getElementById('reset').addEventListener('click', ()=>{ initGrid(); spawnCurrent(); score=0; lives=3; document.getElementById('score').innerText='Score: 0'; document.getElementById('lives').innerText = lives; });
+document.getElementById('mute').addEventListener('click', ()=>{ soundOn = !soundOn; document.getElementById('mute').innerText = soundOn? 'Sound' : 'Muted'; if(soundOn) startMusic(); else stopMusic(); });
+
+// Start screen logic (also unlock audio on user gesture)
+const startScreen = document.getElementById('startScreen');
+document.getElementById('playBtn').addEventListener('click', ()=>{
+  // unlock audio
+  try { ensureAudio(); audioCtx.resume(); } catch(e) {}
+  startMusic();
+  startScreen.style.display='none';
+  document.documentElement.requestFullscreen().catch(()=>{});
+  initGrid(); spawnCurrent();
+});
+
+// Game loop
+let last = performance.now();
+function update(dt){
+  shooter.x = window.innerWidth/2;
+  shooter.y = window.innerHeight - (R*2 + 18);
+
+  if(shooting && current){
+    current.x += vx*dt; current.y += vy*dt;
+    // walls
+    if(current.x < R+6){ current.x = R+6; vx = -vx; }
+    if(current.x > window.innerWidth - R - 6){ current.x = window.innerWidth - R - 6; vx = -vx; }
+    if(collisionWithGrid(current.x,current.y)){
+      const pos = attachToGrid(current.x,current.y);
+      if(pos){
+        const matches = findMatches(pos.r,pos.c);
+        if(matches.length >= 3){
+          for(const [rr,cc] of matches){ grid[rr][cc] = null; score += 10; }
+          playPop();
+          removeDisconnected();
+        } else {
+          // slight penalty or nothing
+        }
+      } else {
+        // no place to attach, lost life
+        lives--; document.getElementById('lives').innerText = lives;
+      }
+      spawnCurrent();
+    }
+  }
+
+  // if bubbles reach bottom -> lose life
+  // simplified: if any bubble y > shooter.y - 100 then lose
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) if(grid[r][c]){
+    const p = gridToXY(r,c);
+    if(p.y > shooter.y - R*2 - 6){ lives--; document.getElementById('lives').innerText = lives; initGrid(); spawnCurrent(); }
+  }
+
+  document.getElementById('score').innerText = 'Score: ' + score;
+}
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // background
+  ctx.fillStyle = 'linear-gradient(180deg,#071025,#041023)'; // placeholder
+  ctx.fillStyle = '#061226'; ctx.fillRect(0,0,window.innerWidth,window.innerHeight);
+  // draw grid
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const p = gridToXY(r,c);
+      if(grid[r][c]) drawBubble(p.x,p.y,grid[r][c].color);
+      else { ctx.beginPath(); ctx.arc(p.x,p.y,R,0,Math.PI*2); ctx.lineWidth=1; ctx.strokeStyle='rgba(255,255,255,0.03)'; ctx.stroke(); }
+    }
+  }
+  // shooter aim guide
+  if(current && !shooting){
+    ctx.beginPath(); ctx.moveTo(shooter.x, shooter.y);
+    const dx = pointer.x - shooter.x, dy = pointer.y - shooter.y; const len = Math.hypot(dx,dy)||1;
+    ctx.lineTo(shooter.x + (dx/len)*110, shooter.y + (dy/len)*110);
+    ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.stroke();
+  }
+  // draw shooter base
+  ctx.beginPath(); ctx.rect(shooter.x-30, shooter.y+R+6, 60, 12); ctx.fillStyle='#0f1a33'; ctx.fill();
+  // draw current & next
+  if(current) drawBubble(current.x, current.y, current.color);
+  // next preview circle already set via CSS background, but draw small ring
+  const np = document.getElementById('nextPreview');
+  if(np) np.style.display='inline-block';
+}
+
+function drawBubble(x,y,color){
+  ctx.beginPath(); ctx.arc(x,y,R,0,Math.PI*2); ctx.fillStyle=color; ctx.fill();
+  ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.stroke();
+  // highlight
+  ctx.beginPath(); ctx.arc(x-R*0.28,y-R*0.28,R*0.22,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.fill();
+}
+
+function loop(t){
+  const dt = Math.min(2, (t-last)/16.666);
+  update(dt);
+  draw();
+  last = t;
+  requestAnimationFrame(loop);
+}
+initGrid();
+spawnCurrent();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
